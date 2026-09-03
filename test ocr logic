@@ -1,0 +1,105 @@
+import re
+def parse_fields(raw_text: str) -> dict:
+    """
+    Extract key document fields using regex patterns.
+    Returns dictionary with parsed candidate dates, document number, and name.
+    """
+    if not raw_text or not raw_text.strip():
+        return {
+            "possible_dates": [],
+            "possible_document_number": None,
+            "possible_name": None
+        }
+    # Common non-name keywords and document labels to filter out
+    reserved_words = {
+        "PASSPORT", "REPUBLIC", "UNITED", "STATES", "KINGDOM", "CANADA", "OFFICIAL", "GOVERNMENT",
+        "NATIONAL", "IDENTITY", "CARD", "DRIVING", "LICENCE", "LICENSE", "DEPARTMENT", "MINISTRY",
+        "FOREIGN", "AFFAIRS", "SPECIMEN", "SAMPLE", "SURNAME", "GIVEN", "NAMES", "DATE", "BIRTH",
+        "SEX", "NATIONALITY", "PLACE", "EXPIRY", "ISSUE", "AUTHORITY", "SIGNATURE", "TYPE", "CODE",
+        "FEDERAL", "UNION", "EUROPEAN", "HOLDER", "COUNTRY", "CITIZEN", "EMERALD"
+    }
+    # 1. Dates Extraction (DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY-MM-DD, DD MON YYYY)
+    date_patterns = [
+        r'\b\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{2,4}\b',
+        r'\b\d{4}[/\-\.]\d{1,2}[/\-\.]\d{1,2}\b',
+        r'\b\d{1,2}[\s\-\.](?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[a-z]*[\s\-\.]\d{2,4}\b'
+    ]
+    found_dates = []
+    for pattern in date_patterns:
+        for match in re.finditer(pattern, raw_text, re.IGNORECASE):
+            date_str = match.group(0).strip()
+            if date_str not in found_dates:
+                found_dates.append(date_str)
+    # 2. Document / Passport Number Extraction
+    doc_number = None
+    
+    # 2a. Check explicit label on the same line (e.g. "Passport No: K81749204", "Doc No. 123456789")
+    label_pattern = r'(?i)\b(?:passport|document|doc|id|card|license|licence)\s*(?:no|number|#|num)?\s*[:\.\-]?\s*([A-Z0-9]{6,12})\b'
+    for match in re.finditer(label_pattern, raw_text):
+        cand = match.group(1).upper()
+        if cand not in reserved_words and not re.match(r'^(?:NUMBER|PASSPORT|DOCUMENT|NATIONAL|IDENTITY)$', cand):
+            doc_number = cand
+            break
+    # 2b. Fallback: Search for standalone patterns with alphanumeric mix or 1-2 letters + 6-9 digits
+    if not doc_number:
+        # Check standard alphanumeric patterns (e.g., A1234567, 123456789, XY9876543)
+        candidate_matches = re.findall(r'\b([A-Z]{1,2}[0-9]{6,9}|[A-Z0-9]{7,10})\b', raw_text)
+        for cand in candidate_matches:
+            cand_upper = cand.upper()
+            if cand_upper not in reserved_words:
+                # Ensure it's not all letters (should have at least 1 digit for typical doc numbers)
+                if any(ch.isdigit() for ch in cand_upper):
+                    doc_number = cand_upper
+                    break
+    # 3. Possible Full Name Extraction
+    # Scan lines for 2 to 4 words in ALL CAPS (no digits or symbols)
+    possible_name = None
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    # First check if there is a line right after "Surname" or "Given Names" or "Name:"
+    for i, line in enumerate(lines):
+        if re.search(r'(?i)\b(?:surname|given\s*names?|full\s*name|name)\b[:\s]*$', line) and i + 1 < len(lines):
+            next_line = lines[i + 1].strip()
+            clean_next = re.sub(r'[^A-Za-z\s]', '', next_line).strip()
+            words = clean_next.split()
+            if 1 <= len(words) <= 4 and all(w.isupper() for w in words):
+                if not any(w in reserved_words for w in words):
+                    possible_name = " ".join(words)
+                    break
+    # General search if not found after label
+    if not possible_name:
+        for line in lines:
+            # Remove symbols/punctuation
+            clean_line = re.sub(r'[^A-Za-z\s]', '', line).strip()
+            words = clean_line.split()
+            # 2 to 4 words, each uppercase with length >= 2
+            if 2 <= len(words) <= 4:
+                if all(w.isupper() and len(w) >= 2 for w in words):
+                    if not any(w in reserved_words for w in words):
+                        possible_name = " ".join(words)
+                        break
+    return {
+        "possible_dates": found_dates,
+        "possible_document_number": doc_number,
+        "possible_name": possible_name
+    }
+# Test with our sample
+sample_raw_ocr = """
+PASSPORT
+REPUBLIC OF EMERALD
+Type: P  Code: EMD  Passport No: K81749204
+Surname / Nom:
+HARRISON
+Given Names / Prenoms:
+SARAH JANE
+Nationality: EMERALD CITIZEN
+Date of Birth: 14 JUL 1992
+Sex: F
+Date of Issue: 02/05/2021
+Date of Expiry: 01-05-2031
+Authority: PASSPORT OFFICE
+SARAH JANE HARRISON
+P<EMDHARRISON<<SARAH<JANE<<<<<<<<<<<<<<<<<<<
+K817492044EMD9207148F3105011<<<<<<<<<<<<<<04
+"""
+result = parse_fields(sample_raw_ocr)
+print("Parsed Result:", result)
